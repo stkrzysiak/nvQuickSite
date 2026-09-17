@@ -151,6 +151,7 @@ namespace nvQuickSite.Controllers
             var useSiteSpecificAppPool = !options.HasFlag("no-app-pool");
             var deleteExistingSite = options.HasFlag("delete-existing-site");
             var force = options.HasFlag("force");
+            var skipDatabase = options.HasFlag("skip-db");
 
             if (!useWindowsAuthentication && string.IsNullOrEmpty(databasePassword))
             {
@@ -181,20 +182,32 @@ namespace nvQuickSite.Controllers
                 databaseServer,
                 useWindowsAuthentication,
                 databaseUser,
-                databasePassword);
-
-            Info($"Creating database {databaseName} on {databaseServer}");
-            var databaseController = new DatabaseController(
-                databaseName,
-                databaseServer,
-                useWindowsAuthentication,
-                databaseUser,
                 databasePassword,
-                installFolder,
-                useSiteSpecificAppPool,
-                siteName);
-            databaseController.CreateDatabase();
-            databaseController.SetDatabasePermissions();
+                createDatabaseFolder: !skipDatabase);
+
+            if (skipDatabase)
+            {
+                // The caller owns the database (e.g. it lives on a server that
+                // does not speak full T-SQL, like Babelfish for PostgreSQL,
+                // where SetDatabasePermissions' sp_grantlogin does not exist).
+                // The db options still flow into web.config below.
+                Info("Skipping database creation (--skip-db)");
+            }
+            else
+            {
+                Info($"Creating database {databaseName} on {databaseServer}");
+                var databaseController = new DatabaseController(
+                    databaseName,
+                    databaseServer,
+                    useWindowsAuthentication,
+                    databaseUser,
+                    databasePassword,
+                    installFolder,
+                    useSiteSpecificAppPool,
+                    siteName);
+                databaseController.CreateDatabase();
+                databaseController.SetDatabasePermissions();
+            }
 
             Info($"Extracting {Path.GetFileName(packagePath)}");
             ExtractPackage(packagePath, Path.Combine(installFolder, "Website"));
@@ -657,6 +670,7 @@ namespace nvQuickSite.Controllers
                     Info("  --db-name <name>          Database name. Defaults to the site name up to the first dot.");
                     Info("  --db-user <user>          SQL Server login. Windows authentication is used when omitted.");
                     Info("  --db-password <password>  SQL Server password. Required with --db-user.");
+                    Info("  --skip-db                 Do not create the database or set permissions; the db options only shape web.config.");
                     Info("  --no-app-pool             Use DefaultAppPool instead of a site specific application pool.");
                     Info("  --ssl                     Add an https binding.");
                     Info("  --certificate <name>      Certificate friendly name or thumbprint. Defaults to the first one found.");

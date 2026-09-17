@@ -21,6 +21,7 @@ namespace nvQuickSite.Controllers
     using System.IO;
     using System.Linq;
     using System.Security.AccessControl;
+    using System.Security.Principal;
     using System.Xml.Linq;
 
     using nvQuickSite.Controllers.Exceptions;
@@ -140,7 +141,10 @@ namespace nvQuickSite.Controllers
         /// <param name="usesWindowsAuthentication">A value indicating whether to use windows authentication for the databas access.</param>
         /// <param name="dbUserName">The database username.</param>
         /// <param name="dbPassword">The database password.</param>
-        internal static void CreateDirectories(string installFolder, string siteName, bool useSiteSpecificAppPool, string dbInstanceName, string dbServerName, bool usesWindowsAuthentication, string dbUserName, string dbPassword)
+        /// <param name="createDatabaseFolder">Whether to create the Database folder and grant the local SQL Server
+        /// service access to it. Pass false when the database lives on a server that is not this machine's
+        /// SQL Server service (e.g. --skip-db installs against a remote or non-MSSQL TDS endpoint).</param>
+        internal static void CreateDirectories(string installFolder, string siteName, bool useSiteSpecificAppPool, string dbInstanceName, string dbServerName, bool usesWindowsAuthentication, string dbUserName, string dbPassword, bool createDatabaseFolder = true)
         {
             Log.Logger.Information("Creating file system directories for {siteName}", siteName);
             var websiteDir = installFolder + "\\Website";
@@ -148,7 +152,6 @@ namespace nvQuickSite.Controllers
             var databaseDir = installFolder + "\\Database";
 
             var appPoolName = @"IIS APPPOOL\DefaultAppPool";
-            var dbServiceAccount = GetDBServiceAccount(dbInstanceName);
             var authenticatedUsers = GetAuthenticatedUsersAccount();
 
             if (useSiteSpecificAppPool)
@@ -184,28 +187,34 @@ namespace nvQuickSite.Controllers
                 SetFolderPermission(authenticatedUsers, logsDir);
             }
 
-            if (!Directory.Exists(databaseDir))
+            if (createDatabaseFolder)
             {
-                Directory.CreateDirectory(databaseDir);
-                SetFolderPermission(dbServiceAccount, databaseDir);
-                SetFolderPermission(authenticatedUsers, databaseDir);
-            }
-            else
-            {
-                if (!DirectoryEmpty(databaseDir))
+                var dbServiceAccount = GetDBServiceAccount(dbInstanceName);
+                if (!Directory.Exists(databaseDir))
                 {
-                    var myDBFile = Directory.EnumerateFiles(databaseDir, "*.mdf").First().Split('_').First().Split('\\').Last();
-                    DatabaseController databaseController = new DatabaseController(myDBFile, dbServerName, usesWindowsAuthentication, dbUserName, dbPassword, installFolder, useSiteSpecificAppPool, siteName);
-                    databaseController.DropDatabase();
+                    Directory.CreateDirectory(databaseDir);
+                    SetFolderPermission(dbServiceAccount, databaseDir);
+                    SetFolderPermission(authenticatedUsers, databaseDir);
                 }
+                else
+                {
+                    if (!DirectoryEmpty(databaseDir))
+                    {
+                        var myDBFile = Directory.EnumerateFiles(databaseDir, "*.mdf").First().Split('_').First().Split('\\').Last();
+                        DatabaseController databaseController = new DatabaseController(myDBFile, dbServerName, usesWindowsAuthentication, dbUserName, dbPassword, installFolder, useSiteSpecificAppPool, siteName);
+                        databaseController.DropDatabase();
+                    }
 
-                DeleteDirectory(databaseDir, null, true);
-                Directory.CreateDirectory(databaseDir);
-                SetFolderPermission(dbServiceAccount, databaseDir);
-                SetFolderPermission(authenticatedUsers, databaseDir);
+                    DeleteDirectory(databaseDir, null, true);
+                    Directory.CreateDirectory(databaseDir);
+                    SetFolderPermission(dbServiceAccount, databaseDir);
+                    SetFolderPermission(authenticatedUsers, databaseDir);
+                }
             }
 
-            string[] createdFolders = { websiteDir, logsDir, databaseDir };
+            var createdFolders = createDatabaseFolder
+                ? new[] { websiteDir, logsDir, databaseDir }
+                : new[] { websiteDir, logsDir };
             Log.Logger.Information("Created folders {createdFolders}", createdFolders);
         }
 
@@ -389,39 +398,52 @@ namespace nvQuickSite.Controllers
 
         private static void SetFolderPermission(string accountName, string folderPath)
         {
-            try
+            // A freshly created "IIS APPPOOL\<name>" virtual account can take a
+            // few seconds to become translatable to a SID; headless runs hit the
+            // window that the wizard's UI pacing hides. Retry before giving up.
+            const int maxAttempts = 10;
+            for (var attempt = 1; ; attempt++)
             {
-                FileSystemRights rights;
-                rights = FileSystemRights.Modify;
-                bool modified;
+                try
+                {
+                    FileSystemRights rights;
+                    rights = FileSystemRights.Modify;
+                    bool modified;
 
-                var accessRule = new FileSystemAccessRule(
-                    accountName,
-                    rights,
-                    InheritanceFlags.None,
-                    PropagationFlags.NoPropagateInherit,
-                    AccessControlType.Allow);
+                    var accessRule = new FileSystemAccessRule(
+                        accountName,
+                        rights,
+                        InheritanceFlags.None,
+                        PropagationFlags.NoPropagateInherit,
+                        AccessControlType.Allow);
 
-                var dInfo = new DirectoryInfo(folderPath);
-                var dSecurity = dInfo.GetAccessControl();
-                dSecurity.ModifyAccessRule(AccessControlModification.Set, accessRule, out modified);
+                    var dInfo = new DirectoryInfo(folderPath);
+                    var dSecurity = dInfo.GetAccessControl();
+                    dSecurity.ModifyAccessRule(AccessControlModification.Set, accessRule, out modified);
 
-                var accessRule2 = new FileSystemAccessRule(
-                    accountName,
-                    rights,
-                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                    PropagationFlags.InheritOnly,
-                    AccessControlType.Allow);
+                    var accessRule2 = new FileSystemAccessRule(
+                        accountName,
+                        rights,
+                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                        PropagationFlags.InheritOnly,
+                        AccessControlType.Allow);
 
-                dSecurity.ModifyAccessRule(AccessControlModification.Add, accessRule2, out modified);
+                    dSecurity.ModifyAccessRule(AccessControlModification.Add, accessRule2, out modified);
 
-                dInfo.SetAccessControl(dSecurity);
-                Log.Logger.Debug("Permissions for {accountName} set on folder {folderPath}", accountName, folderPath);
-            }
-            catch (Exception ex)
-            {
-                Log.Logger.Error(ex, "Error occured while attempting to set permissions for {accountName} on folder {folderPath}", accountName, folderPath);
-                throw new FileSystemControllerException("There was a problem setting the folder permissions for folder path " + folderPath + " using account name " + accountName, ex) { Source = "Set Folder Permission" };
+                    dInfo.SetAccessControl(dSecurity);
+                    Log.Logger.Debug("Permissions for {accountName} set on folder {folderPath}", accountName, folderPath);
+                    return;
+                }
+                catch (IdentityNotMappedException ex) when (attempt < maxAttempts)
+                {
+                    Log.Logger.Warning(ex, "Account {accountName} not resolvable yet (attempt {attempt}/{maxAttempts}); retrying", accountName, attempt, maxAttempts);
+                    System.Threading.Thread.Sleep(3000);
+                }
+                catch (Exception ex)
+                {
+                    Log.Logger.Error(ex, "Error occured while attempting to set permissions for {accountName} on folder {folderPath}", accountName, folderPath);
+                    throw new FileSystemControllerException("There was a problem setting the folder permissions for folder path " + folderPath + " using account name " + accountName, ex) { Source = "Set Folder Permission" };
+                }
             }
         }
     }
