@@ -74,8 +74,12 @@ namespace nvQuickSite.Controllers
 
                     if (useSiteSpecificAppPool)
                     {
+                        // Reuse a leftover pool rather than crash on the duplicate:
+                        // a partially deleted site can orphan its pool, and Add()
+                        // throws COMException 0x800700B7 on the existing name.
                         var appPoolName = siteName + "_nvQuickSite";
-                        ApplicationPool newPool = iisManager.ApplicationPools.Add(appPoolName);
+                        ApplicationPool newPool = iisManager.ApplicationPools[appPoolName]
+                            ?? iisManager.ApplicationPools.Add(appPoolName);
                         newPool.ManagedRuntimeVersion = "v4.0";
                         site.ApplicationDefaults.ApplicationPoolName = appPoolName;
                     }
@@ -239,7 +243,7 @@ namespace nvQuickSite.Controllers
         /// <exception cref="ArgumentException"> is thrown when the site cannot be stopped.</exception>
         internal static void StopSite(long siteId, IProgress<int> progress)
         {
-            Log.Logger.Debug("Deleting site with id {siteId}", siteId);
+            Log.Logger.Debug("Stopping site with id {siteId}", siteId);
             using (var iisManager = new ServerManager())
             {
                 progress?.Report(25);
@@ -247,10 +251,12 @@ namespace nvQuickSite.Controllers
                 if (site == null)
                 {
                     Log.Logger.Information("Site with id {siteId} does not exist", siteId);
+                    progress?.Report(100);
+                    return;
                 }
 
                 site.ServerAutoStart = false;
-                progress.Report(50);
+                progress?.Report(50);
                 if (site.State != ObjectState.Stopped)
                 {
                     try
@@ -265,8 +271,11 @@ namespace nvQuickSite.Controllers
                         throw new ArgumentException(message, ex) { Source = "Stop Site Error" };
                     }
                 }
+                else
+                {
+                    Log.Logger.Information("Site {siteName} was already stopped", site.Name);
+                }
 
-                Log.Logger.Information("Site {siteName} was already stopped", site.Name);
                 progress?.Report(100);
             }
         }
