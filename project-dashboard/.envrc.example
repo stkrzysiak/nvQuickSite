@@ -1,0 +1,20 @@
+# Copy to .envrc and `direnv allow`. Every value has a sensible default, so an
+# empty .envrc is fine too.
+
+use nix
+
+# Folder to scan, one project per subfolder.
+export PROJECTS_ROOT="$HOME/dev/personal"
+
+# Where dashboard.json (statuses, summaries, questions) is stored when running
+# locally. In Docker this is the ./data bind mount.
+export DATA_DIR="$PWD/data"
+
+export PORT=8420
+export SCAN_INTERVAL=300          # seconds between automatic rescans; 0 disables
+export EXCLUDE=""                 # comma-separated folder names to skip
+
+# Docker only: host port and the uid/gid the container runs as (id -u / id -g).
+export DASHBOARD_PORT=8420
+export DASHBOARD_UID=1000
+export DASHBOARD_GID=100

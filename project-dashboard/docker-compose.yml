@@ -1,0 +1,23 @@
+# Runs the dashboard on tower. The projects folder is mounted read-only: the
+# dashboard only ever reads git/backlog state; its own data lives in ./data.
+#
+#   make docker-up            # build + start in the background
+#   http://<tower-lan-ip>:8420/pm     for the project-management view
+#   http://<tower-lan-ip>:8420/tech   for the technical view
+services:
+  dashboard:
+    build: .
+    image: project-dashboard:local
+    container_name: project-dashboard
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-8420}:8420"
+    environment:
+      SCAN_INTERVAL: "${SCAN_INTERVAL:-300}"
+      EXCLUDE: "${EXCLUDE:-}"
+    volumes:
+      - "${PROJECTS_ROOT:-${HOME}/dev/personal}:/projects:ro"
+      - "./data:/data"
+    # Run as the host user so the git working trees (and ./data) are readable
+    # and the data file is not owned by root. Override with DASHBOARD_UID/GID.
+    user: "${DASHBOARD_UID:-1000}:${DASHBOARD_GID:-100}"
